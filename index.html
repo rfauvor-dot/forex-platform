@@ -1,0 +1,294 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Forex Signal Monitor</title>
+<script src="https://unpkg.com/lightweight-charts/dist/lightweight-charts.standalone.production.js"></script>
+<style>
+  @import url('https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans:wght@300;400;500&display=swap');
+  :root {
+    --bg:#0a0c0f; --surface:#111418; --border:#1e2228; --dim:#2a3040;
+    --muted:#4a5568; --text:#c8d0dc; --bright:#e8edf5;
+    --amber:#f0a832; --amber-dim:#7a5418;
+    --green:#2ecc71; --red:#e74c3c; --blue:#3498db;
+    --mono:'IBM Plex Mono',monospace; --sans:'IBM Plex Sans',sans-serif;
+  }
+  *{box-sizing:border-box;margin:0;padding:0;}
+  body{background:var(--bg);color:var(--text);font-family:var(--sans);font-size:13px;min-height:100vh;}
+  header{display:flex;align-items:center;justify-content:space-between;padding:14px 24px;border-bottom:1px solid var(--border);background:var(--surface);}
+  .logo{font-family:var(--mono);font-size:15px;font-weight:600;color:var(--amber);letter-spacing:.08em;}
+  .logo span{color:var(--muted);font-weight:400;}
+  .header-right{display:flex;align-items:center;gap:20px;}
+  .session-badge{font-family:var(--mono);font-size:11px;padding:3px 10px;border-radius:2px;border:1px solid var(--dim);color:var(--muted);letter-spacing:.06em;}
+  .session-badge.overlap{border-color:var(--amber-dim);color:var(--amber);background:rgba(240,168,50,.06);}
+  .session-badge.active{border-color:#1a4a2a;color:var(--green);background:rgba(46,204,113,.06);}
+  .clock{font-family:var(--mono);font-size:12px;color:var(--muted);}
+  .account-bar{display:flex;gap:32px;padding:10px 24px;border-bottom:1px solid var(--border);}
+  .account-item{display:flex;flex-direction:column;gap:2px;}
+  .account-label{font-size:10px;color:var(--muted);letter-spacing:.08em;text-transform:uppercase;}
+  .account-value{font-family:var(--mono);font-size:13px;color:var(--bright);font-weight:500;}
+  .account-value.positive{color:var(--green);}
+  .account-value.negative{color:var(--red);}
+  main{padding:20px 24px;display:flex;flex-direction:column;gap:12px;}
+  .section-label{font-size:10px;color:var(--muted);letter-spacing:.12em;text-transform:uppercase;margin-bottom:8px;display:flex;align-items:center;gap:10px;}
+  .section-label::after{content:'';flex:1;height:1px;background:var(--border);}
+  .pairs-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(340px,1fr));gap:10px;}
+  .pair-card{background:var(--surface);border:1px solid var(--border);border-radius:3px;padding:14px 16px;cursor:pointer;transition:border-color .2s,background .15s;}
+  .pair-card:hover{background:#161a20;border-color:var(--amber-dim);}
+  .pair-card.signal-buy{border-color:#1a4a2a;}
+  .pair-card.signal-sell{border-color:#4a1a1a;}
+  .pair-card.near-key-level{border-color:var(--amber-dim);}
+  .pair-header{display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:12px;}
+  .pair-name{font-family:var(--mono);font-size:16px;font-weight:600;color:var(--bright);letter-spacing:.04em;}
+  .pair-price{font-family:var(--mono);font-size:16px;font-weight:500;color:var(--amber);text-align:right;}
+  .pair-spread{font-size:10px;color:var(--muted);text-align:right;margin-top:2px;font-family:var(--mono);}
+  .signal-badge{display:inline-block;font-family:var(--mono);font-size:10px;font-weight:600;letter-spacing:.1em;padding:2px 8px;border-radius:2px;margin-bottom:10px;}
+  .signal-badge.buy{background:rgba(46,204,113,.12);color:var(--green);border:1px solid #1a4a2a;}
+  .signal-badge.sell{background:rgba(231,76,60,.12);color:var(--red);border:1px solid #4a1a1a;}
+  .signal-badge.none{color:var(--muted);font-size:10px;padding:2px 0;border:none;background:none;}
+  .indicators{display:grid;grid-template-columns:repeat(3,1fr);gap:8px;margin-bottom:10px;}
+  .indicator{display:flex;flex-direction:column;gap:3px;}
+  .ind-label{font-size:9px;color:var(--muted);letter-spacing:.08em;text-transform:uppercase;}
+  .ind-value{font-family:var(--mono);font-size:13px;color:var(--text);font-weight:500;}
+  .ind-value.overbought{color:var(--red);}
+  .ind-value.oversold{color:var(--green);}
+  .gauge-bar{height:3px;background:var(--dim);border-radius:2px;overflow:hidden;margin-top:2px;}
+  .gauge-fill{height:100%;border-radius:2px;background:var(--muted);transition:width .4s ease;}
+  .gauge-fill.overbought{background:var(--red);}
+  .gauge-fill.oversold{background:var(--green);}
+  .gauge-fill.neutral{background:var(--amber);}
+  .levels{display:flex;gap:16px;padding-top:10px;border-top:1px solid var(--border);font-family:var(--mono);font-size:11px;}
+  .level-item{display:flex;flex-direction:column;gap:2px;}
+  .level-label{font-size:9px;color:var(--muted);letter-spacing:.08em;text-transform:uppercase;}
+  .level-value{color:var(--text);}
+  .level-value.highlighted{color:var(--amber);}
+  .stop-suggestion{margin-top:8px;padding:6px 10px;background:rgba(240,168,50,.06);border:1px solid var(--amber-dim);border-radius:2px;font-family:var(--mono);font-size:11px;color:var(--amber);}
+  .stop-label{font-size:9px;color:var(--amber-dim);letter-spacing:.08em;text-transform:uppercase;margin-bottom:2px;}
+  .click-hint{font-size:9px;color:var(--muted);text-align:right;margin-top:8px;letter-spacing:.06em;}
+  footer{padding:10px 24px;border-top:1px solid var(--border);display:flex;justify-content:space-between;align-items:center;font-size:11px;color:var(--muted);font-family:var(--mono);}
+  .refresh-indicator{display:flex;align-items:center;gap:6px;}
+  .dot{width:6px;height:6px;border-radius:50%;background:var(--muted);}
+  .dot.live{background:var(--green);animation:pulse 2s infinite;}
+  @keyframes pulse{0%,100%{opacity:1;}50%{opacity:.4;}}
+
+  /* CHART MODAL */
+  .modal-overlay{position:fixed;inset:0;background:rgba(0,0,0,.85);z-index:200;display:none;align-items:flex-start;justify-content:center;padding:20px;}
+  .modal-overlay.open{display:flex;}
+  .modal{background:var(--surface);border:1px solid var(--border);border-radius:4px;width:100%;max-width:960px;max-height:90vh;overflow:hidden;display:flex;flex-direction:column;}
+  .modal-header{display:flex;align-items:center;justify-content:space-between;padding:14px 20px;border-bottom:1px solid var(--border);}
+  .modal-title{font-family:var(--mono);font-size:15px;font-weight:600;color:var(--bright);}
+  .modal-meta{font-family:var(--mono);font-size:12px;color:var(--muted);}
+  .modal-close{background:none;border:1px solid var(--border);color:var(--muted);font-family:var(--mono);font-size:12px;padding:4px 12px;cursor:pointer;border-radius:2px;}
+  .modal-close:hover{color:var(--bright);border-color:var(--muted);}
+  .modal-body{flex:1;overflow:auto;padding:0;}
+  #chart-container{width:100%;height:420px;}
+  .modal-signals{display:grid;grid-template-columns:repeat(5,1fr);gap:1px;background:var(--border);border-top:1px solid var(--border);}
+  .modal-signal-item{background:var(--surface);padding:12px 16px;display:flex;flex-direction:column;gap:4px;}
+  .modal-signal-label{font-size:9px;color:var(--muted);letter-spacing:.08em;text-transform:uppercase;}
+  .modal-signal-value{font-family:var(--mono);font-size:14px;font-weight:500;color:var(--bright);}
+  .modal-signal-value.overbought{color:var(--red);}
+  .modal-signal-value.oversold{color:var(--green);}
+  .modal-signal-value.buy{color:var(--green);}
+  .modal-signal-value.sell{color:var(--red);}
+  .loading-overlay{position:fixed;inset:0;background:var(--bg);display:flex;align-items:center;justify-content:center;font-family:var(--mono);color:var(--amber);font-size:13px;letter-spacing:.1em;z-index:100;transition:opacity .3s;}
+</style>
+</head>
+<body>
+<div class="loading-overlay" id="loader">CONNECTING TO OANDA...</div>
+
+<header>
+  <div class="logo">FX<span>/</span>SIGNAL <span>// PRACTICE</span></div>
+  <div class="header-right">
+    <div class="session-badge" id="session-badge">LOADING...</div>
+    <div class="clock" id="clock">--:-- UTC</div>
+  </div>
+</header>
+
+<div class="account-bar">
+  <div class="account-item"><div class="account-label">Balance</div><div class="account-value" id="acc-balance">--</div></div>
+  <div class="account-item"><div class="account-label">NAV</div><div class="account-value" id="acc-nav">--</div></div>
+  <div class="account-item"><div class="account-label">Unrealized P/L</div><div class="account-value" id="acc-upl">--</div></div>
+  <div class="account-item"><div class="account-label">Realized P/L</div><div class="account-value" id="acc-rpl">--</div></div>
+  <div class="account-item"><div class="account-label">Open Trades</div><div class="account-value" id="acc-trades">--</div></div>
+</div>
+
+<main>
+  <div class="section-label">Live Signals — M15 &nbsp;(click any pair for chart)</div>
+  <div class="pairs-grid" id="pairs-grid"></div>
+</main>
+
+<footer>
+  <div class="refresh-indicator">
+    <div class="dot" id="dot"></div>
+    <span id="updated-label">Updating...</span>
+  </div>
+  <span>Auto-refresh every 30s &nbsp;|&nbsp; ATR-based stops &nbsp;|&nbsp; 15-min candles</span>
+</footer>
+
+<!-- CHART MODAL -->
+<div class="modal-overlay" id="modal-overlay">
+  <div class="modal">
+    <div class="modal-header">
+      <div>
+        <div class="modal-title" id="modal-title">EUR/USD</div>
+        <div class="modal-meta" id="modal-meta">M15 · Last 100 candles</div>
+      </div>
+      <button class="modal-close" onclick="closeModal()">✕ CLOSE</button>
+    </div>
+    <div class="modal-body">
+      <div id="chart-container"></div>
+      <div class="modal-signals" id="modal-signals"></div>
+    </div>
+  </div>
+</div>
+
+<script>
+let signalData = {};
+let chartInstance = null;
+let seriesInstance = null;
+
+function fmt(n,dec=5){if(n===null||n===undefined)return'--';return Number(n).toFixed(dec);}
+function rsiClass(v){if(v===null)return'';if(v>=70)return'overbought';if(v<=30)return'oversold';return'';}
+function stochClass(v){if(v===null)return'';if(v>=80)return'overbought';if(v<=20)return'oversold';return'';}
+function cciClass(v){if(v===null)return'';if(v>=100)return'overbought';if(v<=-100)return'oversold';return'';}
+function gaugeClass(c){if(c==='overbought')return'overbought';if(c==='oversold')return'oversold';return'neutral';}
+
+function renderPair(p){
+  if(p.error)return`<div class="pair-card error-card">${p.pair}: ${p.error}</div>`;
+  const cardClass=p.signal==='buy'?'signal-buy':p.signal==='sell'?'signal-sell':(p.near_support||p.near_resistance)?'near-key-level':'';
+  const sigBadge=p.signal==='buy'?'<div class="signal-badge buy">▲ BUY SIGNAL</div>':p.signal==='sell'?'<div class="signal-badge sell">▼ SELL SIGNAL</div>':'<div class="signal-badge none">No signal</div>';
+  const rsiC=rsiClass(p.rsi),stochC=stochClass(p.stoch),cciC=cciClass(p.cci);
+  const rsiPct=p.rsi?Math.min(100,Math.max(0,p.rsi)):50;
+  const stochPct=p.stoch?Math.min(100,Math.max(0,p.stoch)):50;
+  const cciPct=p.cci?Math.min(100,Math.max(0,(p.cci+200)/4)):50;
+  const stopHtml=p.suggested_stop?`<div class="stop-suggestion"><div class="stop-label">ATR Stop (${p.signal==='buy'?'Long':'Short'})</div>${fmt(p.suggested_stop)}</div>`:'';
+  const srH=p.near_support?'highlighted':'',rrH=p.near_resistance?'highlighted':'';
+  const dec=p.pair.includes('JPY')?3:5;
+  const pairKey=p.pair.replace('/','_');
+  return`<div class="pair-card ${cardClass}" onclick="openChart('${pairKey}')">
+    <div class="pair-header">
+      <div><div class="pair-name">${p.pair}</div></div>
+      <div><div class="pair-price">${fmt(p.price,dec)}</div><div class="pair-spread">spread ${p.spread?(p.spread*(p.pair.includes('JPY')?100:10000)).toFixed(1)+' pips':'--'}</div></div>
+    </div>
+    ${sigBadge}
+    <div class="indicators">
+      <div class="indicator"><div class="ind-label">RSI (14)</div><div class="ind-value ${rsiC}">${fmt(p.rsi,1)}</div><div class="gauge-bar"><div class="gauge-fill ${gaugeClass(rsiC)}" style="width:${rsiPct}%"></div></div></div>
+      <div class="indicator"><div class="ind-label">Stoch %K</div><div class="ind-value ${stochC}">${fmt(p.stoch,1)}</div><div class="gauge-bar"><div class="gauge-fill ${gaugeClass(stochC)}" style="width:${stochPct}%"></div></div></div>
+      <div class="indicator"><div class="ind-label">CCI (20)</div><div class="ind-value ${cciC}">${fmt(p.cci,1)}</div><div class="gauge-bar"><div class="gauge-fill ${gaugeClass(cciC)}" style="width:${cciPct}%"></div></div></div>
+    </div>
+    <div class="levels">
+      <div class="level-item"><div class="level-label">Support</div><div class="level-value ${srH}">${fmt(p.support,dec)}</div></div>
+      <div class="level-item"><div class="level-label">Resistance</div><div class="level-value ${rrH}">${fmt(p.resistance,dec)}</div></div>
+      <div class="level-item"><div class="level-label">BB Upper</div><div class="level-value">${fmt(p.bb_upper,dec)}</div></div>
+      <div class="level-item"><div class="level-label">BB Lower</div><div class="level-value">${fmt(p.bb_lower,dec)}</div></div>
+      <div class="level-item"><div class="level-label">ATR</div><div class="level-value">${fmt(p.atr,dec)}</div></div>
+    </div>
+    ${stopHtml}
+    <div class="click-hint">CLICK FOR CHART →</div>
+  </div>`;
+}
+
+async function openChart(pairKey){
+  const overlay=document.getElementById('modal-overlay');
+  overlay.classList.add('open');
+  document.getElementById('modal-title').textContent=pairKey.replace('_','/');
+
+  // Destroy previous chart
+  if(chartInstance){chartInstance.remove();chartInstance=null;seriesInstance=null;}
+
+  const container=document.getElementById('chart-container');
+  container.innerHTML='<div style="display:flex;align-items:center;justify-content:center;height:420px;font-family:var(--mono);color:var(--muted);font-size:12px;letter-spacing:.08em;">LOADING CHART...</div>';
+
+  try{
+    const res=await fetch(`/api/candles/${pairKey.replace('_','-')}`);
+    const data=await res.json();
+    if(data.error){container.innerHTML=`<div style="padding:20px;color:var(--red);font-family:var(--mono);">Error: ${data.error}</div>`;return;}
+
+    container.innerHTML='';
+    chartInstance=LightweightCharts.createChart(container,{
+      width:container.clientWidth,
+      height:420,
+      layout:{background:{color:'#111418'},textColor:'#4a5568'},
+      grid:{vertLines:{color:'#1e2228'},horzLines:{color:'#1e2228'}},
+      crosshair:{mode:LightweightCharts.CrosshairMode.Normal},
+      rightPriceScale:{borderColor:'#1e2228'},
+      timeScale:{borderColor:'#1e2228',timeVisible:true},
+    });
+
+    seriesInstance=chartInstance.addSeries(LightweightCharts.CandlestickSeries, {
+      upColor:'#2ecc71',downColor:'#e74c3c',
+      borderUpColor:'#2ecc71',borderDownColor:'#e74c3c',
+      wickUpColor:'#2ecc71',wickDownColor:'#e74c3c',
+    });
+    seriesInstance.setData(data.candles);
+    chartInstance.timeScale().fitContent();
+
+    // Signal panel below chart
+    const sig=signalData[pairKey]||{};
+    const dec=pairKey.includes('JPY')?3:5;
+    const sigLabel=sig.signal==='buy'?'▲ BUY':'sell'?'▼ SELL':'—';
+    const sigCls=sig.signal==='buy'?'buy':sig.signal==='sell'?'sell':'';
+    document.getElementById('modal-signals').innerHTML=`
+      <div class="modal-signal-item"><div class="modal-signal-label">Signal</div><div class="modal-signal-value ${sigCls}">${sig.signal?sig.signal.toUpperCase():'—'}</div></div>
+      <div class="modal-signal-item"><div class="modal-signal-label">RSI (14)</div><div class="modal-signal-value ${rsiClass(sig.rsi)}">${fmt(sig.rsi,1)}</div></div>
+      <div class="modal-signal-item"><div class="modal-signal-label">Stoch %K</div><div class="modal-signal-value ${stochClass(sig.stoch)}">${fmt(sig.stoch,1)}</div></div>
+      <div class="modal-signal-item"><div class="modal-signal-label">CCI (20)</div><div class="modal-signal-value ${cciClass(sig.cci)}">${fmt(sig.cci,1)}</div></div>
+      <div class="modal-signal-item"><div class="modal-signal-label">ATR Stop</div><div class="modal-signal-value">${sig.suggested_stop?fmt(sig.suggested_stop,dec):'—'}</div></div>
+    `;
+  }catch(e){container.innerHTML=`<div style="padding:20px;color:var(--red);font-family:var(--mono);">Chart error: ${e.message}</div>`;}
+}
+
+function closeModal(){
+  document.getElementById('modal-overlay').classList.remove('open');
+  if(chartInstance){chartInstance.remove();chartInstance=null;}
+}
+
+document.getElementById('modal-overlay').addEventListener('click',function(e){if(e.target===this)closeModal();});
+document.addEventListener('keydown',e=>{if(e.key==='Escape')closeModal();});
+
+async function fetchSignals(){
+  try{
+    const res=await fetch('/api/signals');
+    const data=await res.json();
+    document.getElementById('loader').style.opacity='0';
+    setTimeout(()=>document.getElementById('loader').style.display='none',300);
+    const badge=document.getElementById('session-badge');
+    if(data.session.overlap){badge.textContent='⚡ LONDON/NY OVERLAP';badge.className='session-badge overlap';}
+    else if(data.session.active.length>0){badge.textContent=data.session.active.join(' + ')+' SESSION';badge.className='session-badge active';}
+    else{badge.textContent='OFF-PEAK HOURS';badge.className='session-badge';}
+    document.getElementById('clock').textContent=data.session.time_et;
+    document.getElementById('updated-label').textContent='Updated '+data.updated;
+    document.getElementById('dot').className='dot live';
+    // Store signal data by pair key for chart modal
+    signalData={};
+    data.pairs.forEach(p=>{if(!p.error)signalData[p.pair.replace('/','_')]=p;});
+    document.getElementById('pairs-grid').innerHTML=data.pairs.map(renderPair).join('');
+  }catch(e){document.getElementById('dot').className='dot';document.getElementById('updated-label').textContent='Connection error — retrying...';}
+}
+
+async function fetchAccount(){
+  try{
+    const res=await fetch('/api/account');
+    const a=await res.json();
+    if(a.error)return;
+    const f=v=>v!==null?Number(v).toLocaleString('en-US',{minimumFractionDigits:2,maximumFractionDigits:2}):'--';
+    document.getElementById('acc-balance').textContent='$'+f(a.balance);
+    document.getElementById('acc-nav').textContent='$'+f(a.nav);
+    const upl=document.getElementById('acc-upl');
+    upl.textContent='$'+f(a.unrealized_pl);
+    upl.className='account-value '+(a.unrealized_pl>0?'positive':a.unrealized_pl<0?'negative':'');
+    const rpl=document.getElementById('acc-rpl');
+    rpl.textContent='$'+f(a.realized_pl);
+    rpl.className='account-value '+(a.realized_pl>0?'positive':a.realized_pl<0?'negative':'');
+    document.getElementById('acc-trades').textContent=a.open_trade_count;
+  }catch(e){}
+}
+
+fetchSignals();fetchAccount();
+setInterval(fetchSignals,30000);setInterval(fetchAccount,30000);
+setInterval(()=>{const n=new Date();document.getElementById('clock').textContent=n.toUTCString().split(' ')[4]+' UTC';},1000);
+window.addEventListener('resize',()=>{if(chartInstance)chartInstance.applyOptions({width:document.getElementById('chart-container').clientWidth});});
+</script>
+</body>
+</html>
