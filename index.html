@@ -189,13 +189,91 @@ function renderPair(p){
   </div>`;
 }
 
+// ===== AUTO TREND LINE DETECTION =====
+let trendLineSeries=[];
+
+function findSwingPoints(candles, lookback=3){
+  const swingHighs=[], swingLows=[];
+  for(let i=lookback;i<candles.length-lookback;i++){
+    const window=candles.slice(i-lookback,i+lookback+1);
+    if(window.every(c=>candles[i].high>=c.high)) swingHighs.push({idx:i,time:candles[i].time,value:candles[i].high});
+    if(window.every(c=>candles[i].low<=c.low)) swingLows.push({idx:i,time:candles[i].time,value:candles[i].low});
+  }
+  return {swingHighs,swingLows};
+}
+
+function linearRegression(points){
+  const n=points.length;
+  const xs=points.map(p=>p.idx), ys=points.map(p=>p.value);
+  const sumX=xs.reduce((a,b)=>a+b,0), sumY=ys.reduce((a,b)=>a+b,0);
+  const sumXY=xs.reduce((s,x,i)=>s+x*ys[i],0), sumX2=xs.reduce((s,x)=>s+x*x,0);
+  const slope=(n*sumXY-sumX*sumY)/(n*sumX2-sumX*sumX);
+  const intercept=(sumY-slope*sumX)/n;
+  return {slope,intercept};
+}
+
+function rSquared(points,slope,intercept){
+  const ys=points.map(p=>p.value);
+  const meanY=ys.reduce((a,b)=>a+b,0)/ys.length;
+  const ssTot=ys.reduce((s,y)=>s+(y-meanY)**2,0);
+  const ssRes=points.reduce((s,p)=>{const pred=slope*p.idx+intercept;return s+(p.value-pred)**2;},0);
+  return ssTot===0?0:1-(ssRes/ssTot);
+}
+
+function detectTrendLines(candles,options={}){
+  const {lookback=3,minPoints=3,minRSquared=0.5,recentBars=60}=options;
+  const startIdx=Math.max(0,candles.length-recentBars);
+  const recentCandles=candles.slice(startIdx);
+  const {swingHighs,swingLows}=findSwingPoints(recentCandles,lookback);
+  // re-offset idx to match position within recentCandles (already correct since computed on recentCandles)
+  const trends=[];
+  const lastIdx=recentCandles.length-1;
+  const lastTime=candles[candles.length-1].time;
+
+  if(swingHighs.length>=minPoints){
+    const pts=swingHighs.slice(-minPoints);
+    const {slope,intercept}=linearRegression(pts);
+    const fit=rSquared(pts,slope,intercept);
+    if(fit>=minRSquared){
+      const firstPt=pts[0];
+      trends.push({color:'#e74c3c',label:(slope>0?'ascending':'descending')+' resistance ('+(fit*100).toFixed(0)+'%)',
+        data:[{time:firstPt.time,value:slope*firstPt.idx+intercept},{time:lastTime,value:slope*lastIdx+intercept}]});
+    }
+  }
+  if(swingLows.length>=minPoints){
+    const pts=swingLows.slice(-minPoints);
+    const {slope,intercept}=linearRegression(pts);
+    const fit=rSquared(pts,slope,intercept);
+    if(fit>=minRSquared){
+      const firstPt=pts[0];
+      trends.push({color:'#2ecc71',label:(slope>0?'ascending':'descending')+' support ('+(fit*100).toFixed(0)+'%)',
+        data:[{time:firstPt.time,value:slope*firstPt.idx+intercept},{time:lastTime,value:slope*lastIdx+intercept}]});
+    }
+  }
+  return trends;
+}
+
+function drawTrendLines(chart,candles){
+  trendLineSeries.forEach(s=>chart.removeSeries(s));
+  trendLineSeries=[];
+  const trends=detectTrendLines(candles);
+  trends.forEach(trend=>{
+    const series=chart.addSeries(LightweightCharts.LineSeries,{
+      color:trend.color,lineWidth:2,lineStyle:LightweightCharts.LineStyle.Dashed,
+      crosshairMarkerVisible:false,lastValueVisible:false,priceLineVisible:false,title:trend.label
+    });
+    series.setData(trend.data);
+    trendLineSeries.push(series);
+  });
+}
+
 async function openChart(pairKey){
   const overlay=document.getElementById('modal-overlay');
   overlay.classList.add('open');
   document.getElementById('modal-title').textContent=pairKey.replace('_','/');
 
   // Destroy previous chart
-  if(chartInstance){chartInstance.remove();chartInstance=null;seriesInstance=null;}
+  if(chartInstance){chartInstance.remove();chartInstance=null;seriesInstance=null;trendLineSeries=[];}
 
   const container=document.getElementById('chart-container');
   container.innerHTML='<div style="display:flex;align-items:center;justify-content:center;height:420px;font-family:var(--mono);color:var(--muted);font-size:12px;letter-spacing:.08em;">LOADING CHART...</div>';
@@ -222,6 +300,7 @@ async function openChart(pairKey){
       wickUpColor:'#2ecc71',wickDownColor:'#e74c3c',
     });
     seriesInstance.setData(data.candles);
+    drawTrendLines(chartInstance,data.candles);
     chartInstance.timeScale().fitContent();
 
     // Signal panel below chart
@@ -241,7 +320,7 @@ async function openChart(pairKey){
 
 function closeModal(){
   document.getElementById('modal-overlay').classList.remove('open');
-  if(chartInstance){chartInstance.remove();chartInstance=null;}
+  if(chartInstance){chartInstance.remove();chartInstance=null;trendLineSeries=[];}
 }
 
 document.getElementById('modal-overlay').addEventListener('click',function(e){if(e.target===this)closeModal();});
