@@ -1,21 +1,22 @@
 """
 Flask web server for the forex signal dashboard.
 """
-
 from flask import Flask, jsonify, send_from_directory
 import os
 import sys
-
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, BASE_DIR)
-
 import config
 from oanda_client import OandaClient
 from signals import compute_all_signals, suggested_stop
+from supabase_client import log_signal
 from datetime import datetime, timezone
 
 app = Flask(__name__, static_folder=BASE_DIR, static_url_path="")
 client = OandaClient()
+
+_last_logged = {}
+LOG_COOLDOWN_MINUTES = 15
 
 @app.route("/")
 def index():
@@ -37,6 +38,12 @@ def get_session_status():
 def signals():
     results = []
     session = get_session_status()
+
+    try:
+        account_balance = client.get_account_summary().get("balance")
+    except Exception:
+        account_balance = None
+
     for pair in config.WATCHLIST:
         try:
             df = client.get_candles(pair)
@@ -51,6 +58,37 @@ def signals():
             elif flags["composite_sell_signal"]:
                 direction = "sell"
             stop = suggested_stop(flags["price"], flags["atr_value"], direction) if direction else None
+
+            if direction:
+                now = datetime.now(timezone.utc)
+                last = _last_logged.get(pair)
+                should_log = (
+                    last is None
+                    or last["direction"] != direction
+                    or (now - last["time"]).total_seconds() > LOG_COOLDOWN_MINUTES * 60
+                )
+                if should_log:
+                    session_str = ",".join(session["active"]) if session["active"] else None
+                    log_signal({
+                        "pair": pair.replace("_", "/"),
+                        "timeframe": config.CANDLE_GRANULARITY,
+                        "session": session_str,
+                        "signal_time": now.isoformat(),
+                        "direction": direction,
+                        "entry_price": flags["price"],
+                        "stop_loss": stop,
+                        "atr_value": flags["atr_value"],
+                        "rsi": flags["rsi_value"],
+                        "stochastic_k": flags["stoch_k"],
+                        "cci": flags["cci_value"],
+                        "bb_upper": flags["bb_upper"],
+                        "bb_lower": flags["bb_lower"],
+                        "nearest_support": flags["support"],
+                        "nearest_resistance": flags["resistance"],
+                        "account_balance": account_balance,
+                    })
+                    _last_logged[pair] = {"direction": direction, "time": now}
+
             results.append({"pair": pair.replace("_", "/"), "price": flags["price"], "spread": price_info["spread"] if price_info else None, "rsi": flags["rsi_value"], "stoch": flags["stoch_k"], "cci": flags["cci_value"], "atr": flags["atr_value"], "bb_upper": flags["bb_upper"], "bb_lower": flags["bb_lower"], "support": flags["support"], "resistance": flags["resistance"], "near_support": flags["near_support"], "near_resistance": flags["near_resistance"], "signal": direction, "suggested_stop": stop, "bb_breakout_upper": flags["bb_breakout_upper"], "bb_breakout_lower": flags["bb_breakout_lower"]})
         except Exception as e:
             results.append({"pair": pair.replace("_", "/"), "error": str(e)})
