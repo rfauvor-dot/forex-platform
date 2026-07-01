@@ -13,13 +13,18 @@ Ruleset simulated (see orb_pyramid_strategy_ruleset.md for full description):
      combined stop moves to 5 pips beyond the newest position's entry.
   6. When the stop is hit, ALL open positions close simultaneously at that price.
 
-NEW IN THIS VERSION - two optional filters to test against false breakouts:
-  --breakout-buffer PIPS   Require the trigger candle's close to clear the range
-                            by at least this many pips (default 0 = original behavior,
-                            any close beyond the range triggers).
-  --min-range PIPS         Skip the day entirely if the 15-min opening range is
-                            narrower than this many pips (default 0 = no filter,
-                            trade any range width).
+CONFIGURABLE FILTERS (all optional, default to original/simplest behavior):
+  --breakout-buffer PIPS    Require the close to clear the range by at least this
+                             many pips (default 0 = any close beyond the range).
+  --min-range PIPS          Skip the day if the 15-min opening range is narrower
+                             than this many pips (default 0 = no filter).
+  --confirm-candles N       Require N CONSECUTIVE 5-min candles to close beyond
+                             the range (same direction) before entering (default 1
+                             = original behavior, enter on the first qualifying close).
+                             Setting this to 2 requires two consecutive closes beyond
+                             the range in the same direction; entry is taken on the
+                             close of the confirming (Nth) candle. This still must
+                             happen within the 30-minute breakout window.
 
 IMPORTANT MODELING ASSUMPTIONS (read before trusting the output):
   - Entry/management is simulated on 5-minute candles. If both a stop-hit and an
@@ -38,7 +43,7 @@ IMPORTANT MODELING ASSUMPTIONS (read before trusting the output):
     doesn't account for holidays).
 
 Usage:
-    python3 backtest_orb_pyramid.py --instruments EUR_USD,GBP_USD --start 2026-01-01 --end 2026-06-30 --breakout-buffer 3 --min-range 8
+    python3 backtest_orb_pyramid.py --instruments EUR_USD,GBP_USD --start 2026-01-01 --end 2026-06-30 --confirm-candles 2
 """
 
 import os
@@ -98,235 +103,3 @@ def fetch_range_candles(client, instrument, granularity, from_dt_utc, to_dt_utc)
         rows.append({
             "time": c["time"],
             "open": float(c["mid"]["o"]),
-            "high": float(c["mid"]["h"]),
-            "low": float(c["mid"]["l"]),
-            "close": float(c["mid"]["c"]),
-        })
-    df = pd.DataFrame(rows)
-    if not df.empty:
-        df["time"] = pd.to_datetime(df["time"], utc=True)
-    return df
-
-
-def ny_session_open_utc(date_obj):
-    """Return the UTC datetime for 8:30 AM ET on the given date (DST-aware)."""
-    ny_open_naive = datetime.combine(date_obj, dtime(8, 30), tzinfo=NY)
-    return ny_open_naive.astimezone(UTC)
-
-
-def simulate_day(df_m5, session_open_utc, instrument, breakout_buffer_pips=0, min_range_pips=0):
-    """
-    Run the ORB pyramid ruleset for a single day's candle data.
-    Returns a dict describing the outcome.
-    """
-    pip = pip_size(instrument)
-
-    range_start = session_open_utc
-    range_end = session_open_utc + timedelta(minutes=RANGE_MINUTES)
-    breakout_deadline = session_open_utc + timedelta(minutes=BREAKOUT_WINDOW_MINUTES)
-
-    range_candles = df_m5[(df_m5["time"] >= range_start) & (df_m5["time"] < range_end)]
-    if range_candles.empty:
-        return {"date": session_open_utc.date(), "result": "no_data"}
-
-    range_high = range_candles["high"].max()
-    range_low = range_candles["low"].min()
-    range_width_pips = (range_high - range_low) / pip
-
-    if range_width_pips < min_range_pips:
-        return {
-            "date": session_open_utc.date(),
-            "result": "range_too_narrow",
-            "range_high": round(range_high, 5),
-            "range_low": round(range_low, 5),
-            "range_width_pips": round(range_width_pips, 1),
-        }
-
-    buffer_price = breakout_buffer_pips * pip
-    entry_candles = df_m5[(df_m5["time"] >= range_end) & (df_m5["time"] < breakout_deadline)]
-
-    direction = None
-    entry_price = None
-    entry_time = None
-
-    for _, candle in entry_candles.iterrows():
-        if candle["close"] > range_high + buffer_price:
-            direction = "buy"
-            entry_price = candle["close"]
-            entry_time = candle["time"]
-            break
-        elif candle["close"] < range_low - buffer_price:
-            direction = "sell"
-            entry_price = candle["close"]
-            entry_time = candle["time"]
-            break
-
-    if direction is None:
-        return {
-            "date": session_open_utc.date(),
-            "result": "no_trade",
-            "range_high": round(range_high, 5),
-            "range_low": round(range_low, 5),
-            "range_width_pips": round(range_width_pips, 1),
-        }
-
-    sign = 1 if direction == "buy" else -1
-    stop_price = entry_price - sign * INITIAL_STOP_PIPS * pip
-    add_trigger_price = entry_price + sign * ADD_TRIGGER_PIPS * pip
-    positions = [{"entry": entry_price, "lots": 10}]
-
-    management_candles = df_m5[df_m5["time"] > entry_time]
-    cutoff = entry_time + timedelta(hours=MANAGEMENT_CAP_HOURS)
-
-    exit_price = None
-    exit_time = None
-    result = "still_open_at_cutoff"
-
-    for _, candle in management_candles.iterrows():
-        if candle["time"] > cutoff:
-            break
-
-        stop_hit = (candle["low"] <= stop_price) if direction == "buy" else (candle["high"] >= stop_price)
-        if stop_hit:
-            exit_price = stop_price
-            exit_time = candle["time"]
-            result = "closed"
-            break
-
-        add_hit = (candle["high"] >= add_trigger_price) if direction == "buy" else (candle["low"] <= add_trigger_price)
-        if add_hit and len(positions) < MAX_ADDS_SAFETY_CAP:
-            new_entry = add_trigger_price
-            positions.append({"entry": new_entry, "lots": 10})
-            stop_price = new_entry - sign * ADD_STOP_BUFFER_PIPS * pip
-            add_trigger_price = new_entry + sign * ADD_TRIGGER_PIPS * pip
-
-    if result == "closed":
-        for p in positions:
-            p["exit"] = exit_price
-            p["pnl_pips"] = round((exit_price - p["entry"]) / pip * sign, 1)
-        total_pips = sum(p["pnl_pips"] for p in positions)
-    else:
-        last_close = management_candles.iloc[-1]["close"] if not management_candles.empty else entry_price
-        for p in positions:
-            p["exit"] = None
-            p["pnl_pips"] = round((last_close - p["entry"]) / pip * sign, 1)
-        total_pips = None
-
-    return {
-        "date": session_open_utc.date(),
-        "result": result,
-        "direction": direction,
-        "range_high": round(range_high, 5),
-        "range_low": round(range_low, 5),
-        "range_width_pips": round(range_width_pips, 1),
-        "entry_price": round(entry_price, 5),
-        "entry_time": entry_time,
-        "exit_price": round(exit_price, 5) if exit_price else None,
-        "exit_time": exit_time,
-        "num_positions": len(positions),
-        "total_pips": total_pips,
-        "positions": positions,
-    }
-
-
-def run_backtest(instrument, start_date, end_date, client, breakout_buffer_pips=0, min_range_pips=0):
-    results = []
-    current = start_date
-    while current <= end_date:
-        if current.weekday() < 5:
-            session_open = ny_session_open_utc(current)
-            fetch_from = session_open - timedelta(minutes=5)
-            fetch_to = session_open + timedelta(hours=MANAGEMENT_CAP_HOURS + 1)
-            try:
-                df = fetch_range_candles(client, instrument, "M5", fetch_from, fetch_to)
-                day_result = simulate_day(df, session_open, instrument, breakout_buffer_pips, min_range_pips)
-                results.append(day_result)
-            except Exception as e:
-                results.append({"date": current, "result": "error", "error": str(e)})
-            time.sleep(0.2)
-        current += timedelta(days=1)
-    return results
-
-
-def summarize(results, instrument, breakout_buffer_pips, min_range_pips):
-    no_data = [r for r in results if r["result"] == "no_data"]
-    no_trade = [r for r in results if r["result"] == "no_trade"]
-    too_narrow = [r for r in results if r["result"] == "range_too_narrow"]
-    closed = [r for r in results if r["result"] == "closed"]
-    still_open = [r for r in results if r["result"] == "still_open_at_cutoff"]
-    errors = [r for r in results if r["result"] == "error"]
-
-    wins = [r for r in closed if r["total_pips"] > 0]
-    losses = [r for r in closed if r["total_pips"] <= 0]
-    total_pips = sum(r["total_pips"] for r in closed)
-
-    print(f"\n=== Backtest Summary: {instrument} (buffer={breakout_buffer_pips}pips, min_range={min_range_pips}pips) ===")
-    print(f"Trading days scanned: {len(results)}")
-    print(f"No data / holidays:   {len(no_data)}")
-    print(f"Range too narrow (filtered out): {len(too_narrow)}")
-    print(f"No trade (no breakout in 30 min): {len(no_trade)}")
-    print(f"Trades taken & closed: {len(closed)}")
-    print(f"Still open at 48h cutoff: {len(still_open)}")
-    print(f"Errors: {len(errors)}")
-    print("---")
-    if closed:
-        win_rate = len(wins) / len(closed) * 100
-        avg_win = sum(r["total_pips"] for r in wins) / len(wins) if wins else 0
-        avg_loss = sum(r["total_pips"] for r in losses) / len(losses) if losses else 0
-        print(f"Win rate: {win_rate:.1f}%  ({len(wins)}W / {len(losses)}L)")
-        print(f"Average winning day: {avg_win:+.1f} pips")
-        print(f"Average losing day:  {avg_loss:+.1f} pips")
-        print(f"Total pips (summed across all positions, all days): {total_pips:+.1f}")
-        max_positions = max(r["num_positions"] for r in closed)
-        print(f"Largest pyramid stack reached: {max_positions} positions")
-    else:
-        print("No closed trades in this window - nothing to summarize.")
-
-
-def write_csv(results, instrument, output_path):
-    with open(output_path, "w", newline="") as f:
-        writer = csv.writer(f)
-        writer.writerow([
-            "date", "result", "direction", "range_high", "range_low", "range_width_pips",
-            "entry_price", "entry_time", "exit_price", "exit_time",
-            "num_positions", "total_pips"
-        ])
-        for r in results:
-            writer.writerow([
-                r.get("date"), r.get("result"), r.get("direction"),
-                r.get("range_high"), r.get("range_low"), r.get("range_width_pips"),
-                r.get("entry_price"), r.get("entry_time"),
-                r.get("exit_price"), r.get("exit_time"),
-                r.get("num_positions"), r.get("total_pips"),
-            ])
-    print(f"\nDetailed results written to {output_path}")
-
-
-if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="ORB Pyramid strategy backtest")
-    parser.add_argument("--instruments", default=",".join(config.WATCHLIST),
-                         help="Comma-separated OANDA instruments, e.g. EUR_USD,GBP_USD")
-    parser.add_argument("--start", required=True, help="Start date YYYY-MM-DD")
-    parser.add_argument("--end", required=True, help="End date YYYY-MM-DD")
-    parser.add_argument("--output-dir", default=".", help="Directory to write CSV results")
-    parser.add_argument("--breakout-buffer", type=float, default=0,
-                         help="Minimum pips the close must clear the range by to trigger (default 0)")
-    parser.add_argument("--min-range", type=float, default=0,
-                         help="Minimum opening range width in pips required to trade (default 0, no filter)")
-    args = parser.parse_args()
-
-    start_date = datetime.strptime(args.start, "%Y-%m-%d").date()
-    end_date = datetime.strptime(args.end, "%Y-%m-%d").date()
-    instruments = [i.strip() for i in args.instruments.split(",")]
-
-    client = OandaClient()
-
-    for instrument in instruments:
-        print(f"\nRunning backtest for {instrument} from {start_date} to {end_date}...")
-        results = run_backtest(instrument, start_date, end_date, client, args.breakout_buffer, args.min_range)
-        summarize(results, instrument, args.breakout_buffer, args.min_range)
-        output_path = os.path.join(
-            args.output_dir,
-            f"backtest_{instrument}_{args.start}_{args.end}_buf{args.breakout_buffer}_minrange{args.min_range}.csv"
-        )
-        write_csv(results, instrument, output_path)
